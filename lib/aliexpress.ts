@@ -1,28 +1,30 @@
+// lib/aliexpress.ts
 import axios from 'axios';
-import CryptoJS from 'crypto-js';
+import { createHmac } from 'crypto';
 
-const BASE = 'https://api-sg.aliexpress.com';
-const KEY = process.env.AE_APP_KEY as string;
+const BASE   = 'https://api-sg.aliexpress.com';
+const KEY    = process.env.AE_APP_KEY as string;
 const SECRET = process.env.AE_APP_SECRET as string;
-const PID = process.env.AE_PID as string;
+const PID    = process.env.AE_PID as string;
 
 if (!KEY || !SECRET || !PID) {
   throw new Error('Missing AliExpress env vars');
 }
 
-/** Build signature per AliExpress doc */
+/** Build the HMAC-SHA256 signature per AliExpress docs */
 function sign(params: Record<string, any>): string {
-  const sortedKeys = Object.keys(params).sort();
-  const raw = sortedKeys.map((k) => `${k}${params[k]}`).join('');
-  return CryptoJS.HmacSHA256(SECRET + raw + SECRET, SECRET)
-    .toString()
-    .toUpperCase();
+  const sorted = Object.keys(params).sort();
+  const raw    = sorted.map(k => `${k}${params[k]}`).join('');
+  return createHmac('sha256', SECRET)
+      .update(SECRET + raw + SECRET)
+      .digest('hex')
+      .toUpperCase();
 }
 
-/** Generate affiliate deeplink for a given product URL */
+/** Generate a PID-tagged deeplink for any AliExpress product URL */
 export async function generateLink(url: string) {
   const timestamp = Date.now();
-  const params: Record<string, any> = {
+  const p: Record<string, any> = {
     method: 'aliexpress.affiliate.link.generate',
     app_key: KEY,
     timestamp,
@@ -32,23 +34,19 @@ export async function generateLink(url: string) {
     promotion_link_type: 1,
     source_values: url,
   };
-  params.sign = sign(params);
+  p.sign = sign(p);
 
   const { data } = await axios.get(
-    `${BASE}/openapi/param2/2/portals.open/api.list`,
-    { params }
+      `${BASE}/openapi/param2/2/portals.open/api.list`,
+      { params: p },
   );
 
-  if (
-    data?.resp_result?.result?.promotion_urls &&
-    data.resp_result.result.promotion_urls.length > 0
-  ) {
-    return data.resp_result.result.promotion_urls[0].url as string;
-  }
+  // Compatibility with both resp_result and result wrappers
+  const arr =
+      data?.resp_result?.result?.promotion_urls ??
+      data?.result?.promotion_urls ??
+      [];
 
-  if (data?.result?.promotion_urls && data.result.promotion_urls.length > 0) {
-    return data.result.promotion_urls[0].url as string;
-  }
-
-  throw new Error('No link returned from AliExpress');
+  if (arr.length > 0) return arr[0].url as string;
+  throw new Error('AliExpress did not return a link');
 }
